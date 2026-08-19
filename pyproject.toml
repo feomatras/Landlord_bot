@@ -1,0 +1,8 @@
+[project]
+name = "communal-payments-bot"
+version = "0.1.0"
+description = "Telegram-бот для автоматизации расчёта коммунальных платежей"
+requires-python = ">=3.11"
+dependencies = [
+    "python-telegram-bot[job-queue]>=20.7,<23",
+]
