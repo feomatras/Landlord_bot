@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from .formatting import service_name
 
 
 def cancel_keyboard() -> InlineKeyboardMarkup:
@@ -82,12 +83,14 @@ def report_keyboard(reading_id: int, statuses: dict[str, object]) -> InlineKeybo
     services = ("water", "electricity", "gas", "tko", "uk", "caprepair")
     rows = []
     for service in services:
-        paid = bool(statuses.get(service)["paid"]) if service in statuses else False
-        label = "✔ Оплачено" if paid else "Оплатить"
+        # Use a safe lookup in case the service entry is missing or malformed
+        paid = bool(statuses.get(service, {}).get("paid", False))
+        status_label = "Оплачено" if paid else "Не оплачено"
+        symbol = "✓" if paid else "□"
         rows.append(
             [
                 InlineKeyboardButton(
-                    f"{'✓' if paid else '□'} {label}",
+                    f"{symbol} {service_name(service)} — {status_label}",
                     callback_data=f"pay:{reading_id}:{service}",
                 )
             ]
