@@ -947,11 +947,18 @@ class CommunalBot:
                 None,
             )
             if reading:
+                amounts = {
+                    'water': float(reading['water_amount']),
+                    'electricity': float(reading['electricity_amount']),
+                    'gas': float(reading['gas_amount']),
+                    'tko': float(reading['tko_amount']),
+                    'uk': float(reading['uk_amount']),
+                    'caprepair': float(reading['caprepair_amount']),
+                }
+                statuses = self.db.payment_statuses(int(reading_id))
                 await query.edit_message_text(
                     self.report_text(reading, flat_id, True),
-                    reply_markup=report_keyboard(
-                        int(reading_id), self.db.payment_statuses(int(reading_id))
-                    ),
+                    reply_markup=report_keyboard(int(reading_id), statuses, amounts),
                 )
                 await query.answer(
                     f"{service_name(service)}: {'оплачено' if paid else 'не оплачено'}"
@@ -1052,13 +1059,20 @@ class CommunalBot:
         return f"10.{month_number:02d}.{year:04d}"
 
     async def send_report_to_admins(self, bot, row, flat_id: int) -> None:
+        amounts = {
+            'water': float(row['water_amount']),
+            'electricity': float(row['electricity_amount']),
+            'gas': float(row['gas_amount']),
+            'tko': float(row['tko_amount']),
+            'uk': float(row['uk_amount']),
+            'caprepair': float(row['caprepair_amount']),
+        }
+        statuses = self.db.payment_statuses(int(row['id']))
         for admin in self.db.admins():
             await bot.send_message(
                 int(admin["user_id"]),
                 self.report_text(row, flat_id, True),
-                reply_markup=report_keyboard(
-                    int(row["id"]), self.db.payment_statuses(int(row["id"]))
-                ),
+                reply_markup=report_keyboard(int(row['id']), statuses, amounts),
             )
 
     async def send_recalculation_notifications(
