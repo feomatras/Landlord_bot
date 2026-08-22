@@ -30,6 +30,7 @@ def admin_menu() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("История", callback_data="history"),
                 InlineKeyboardButton("Журнал изменений", callback_data="audit"),
             ],
+            [InlineKeyboardButton("Неоплаченные счета", callback_data="unpaid")],   # <-- новая кнопка
             [InlineKeyboardButton("Инструкция", callback_data="help")],
         ]
     )
