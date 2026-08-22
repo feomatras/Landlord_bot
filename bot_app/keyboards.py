@@ -79,22 +79,25 @@ def tenant_menu() -> InlineKeyboardMarkup:
     )
 
 
-def report_keyboard(reading_id: int, statuses: dict[str, object]) -> InlineKeyboardMarkup:
+def report_keyboard(reading_id: int, statuses: dict[str, object], amounts: dict[str, float]) -> InlineKeyboardMarkup:
+    """
+    Создаёт клавиатуру для отчёта администратора.
+    В кнопках отображаются название услуги, сумма и статус оплаты.
+    """
     services = ("water", "electricity", "gas", "tko", "uk", "caprepair")
     rows = []
     for service in services:
-        # Use a safe lookup in case the service entry is missing or malformed
-        paid = bool(statuses.get(service, {}).get("paid", False))
-        status_label = "Оплачено" if paid else "Не оплачено"
-        symbol = "✓" if paid else "□"
+        # Пропускаем услуги с нулевой суммой (чтобы не засорять интерфейс)
+        if service not in amounts or amounts[service] == 0:
+            continue
+        paid = bool(statuses.get(service, {}).get("paid", 0)) if service in statuses else False
+        label = f"{service_name(service)}: {amounts[service]:.2f} руб. {'✅' if paid else '⬜️'}"
         rows.append(
-            [
-                InlineKeyboardButton(
-                    f"{symbol} {service_name(service)} — {status_label}",
-                    callback_data=f"pay:{reading_id}:{service}",
-                )
-            ]
+            [InlineKeyboardButton(label, callback_data=f"pay:{reading_id}:{service}")]
         )
+    # Если все суммы нулевые, показываем кнопку "Назад"
+    if not rows:
+        rows.append([InlineKeyboardButton("Назад", callback_data="menu")])
     return InlineKeyboardMarkup(rows)
 
 
