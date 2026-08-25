@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, datetime
 
 
 MONTH_NAMES = (
@@ -77,3 +77,41 @@ def actor_name(user) -> str:
 
 def service_name(service: str) -> str:
     return SERVICE_NAMES.get(service, service)
+
+
+# --- Квартальная навигация ---
+
+def quarter_of_month(month_str: str) -> int:
+    """Возвращает номер квартала (1-4) для месяца в формате ММ.ГГГГ."""
+    month_number = int(month_str.split(".")[0])
+    return (month_number - 1) // 3 + 1
+
+
+def current_quarter(today: date | None = None) -> int:
+    """Возвращает текущий квартал (1-4)."""
+    value = today or date.today()
+    return (value.month - 1) // 3 + 1
+
+
+def quarter_label(quarter: int, year: int) -> str:
+    """Человекочитаемое название квартала, например «1-й квартал 2026»."""
+    return f"{quarter}-й квартал {year}"
+
+
+def months_in_quarter(quarter: int) -> list[int]:
+    """Список номеров месяцев (1-12) для заданного квартала."""
+    return [(quarter - 1) * 3 + 1, (quarter - 1) * 3 + 2, (quarter - 1) * 3 + 3]
+
+
+def year_of_month(month_str: str) -> int:
+    """Возвращает год из строки ММ.ГГГГ."""
+    return int(month_str.split(".")[1])
+
+
+def format_datetime(iso_str: str) -> str:
+    """Форматирует ISO-строку в вид ДД.ММ.ГГГГ ЧЧ:ММ."""
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        return dt.strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        return iso_str

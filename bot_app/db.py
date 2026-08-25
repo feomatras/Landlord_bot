@@ -700,3 +700,72 @@ class Database:
             """,
             (month,),
         )
+
+    # --- Методы для поквартальной навигации ---
+
+    def readings_for_quarter(
+        self, flat_id: int, year: int, quarter: int
+    ) -> list[sqlite3.Row]:
+        """Возвращает показания за указанный квартал и год с данными пользователя."""
+        from .formatting import months_in_quarter
+        months = months_in_quarter(quarter)
+        placeholders = ",".join("?" * len(months))
+        return self._rows(
+            f"""
+            SELECT mr.*, u.first_name, u.username, f.name AS flat_name
+            FROM meter_readings mr
+            JOIN flats f ON f.id = mr.flat_id
+            LEFT JOIN users u ON u.user_id = mr.submitted_by
+            WHERE mr.flat_id = ?
+              AND substr(mr.month, 4, 4) = ?
+              AND CAST(substr(mr.month, 1, 2) AS INTEGER) IN ({placeholders})
+            ORDER BY mr.month
+            """,
+            (flat_id, str(year), *months),
+        )
+
+    def available_years(self, flat_id: int) -> list[int]:
+        """Возвращает список годов, за которые есть показания для квартиры."""
+        rows = self._rows(
+            "SELECT DISTINCT substr(month, 4, 4) AS year FROM meter_readings "
+            "WHERE flat_id = ? ORDER BY year DESC",
+            (flat_id,),
+        )
+        return [int(row["year"]) for row in rows if row["year"]]
+
+    def is_reading_paid(self, reading_id: int) -> bool:
+        """Возвращает True, если все услуги по показанию отмечены как оплаченные."""
+        row = self._row(
+            "SELECT COUNT(*) AS total, SUM(CASE WHEN paid = 1 THEN 1 ELSE 0 END) AS paid_count "
+            "FROM payment_status WHERE reading_id = ? AND amount > 0",
+            (reading_id,),
+        )
+        if row is None or row["total"] == 0:
+            return False
+        return int(row["total"]) == int(row["paid_count"])
+
+    def toggle_reading_paid(self, reading_id: int) -> bool:
+        """Переключает оплату всех услуг по показанию. Возвращает новое состояние (True = всё оплачено)."""
+        paid = self.is_reading_paid(reading_id)
+        new_state = 0 if paid else 1
+        with self.connection() as connection:
+            connection.execute(
+                "UPDATE payment_status SET paid = ?, updated_at = ? WHERE reading_id = ?",
+                (new_state, now_iso(), reading_id),
+            )
+        return not paid
+
+    def all_unpaid_readings(self, flat_id: int) -> list[sqlite3.Row]:
+        """Возвращает показания с неоплаченными услугами для квартиры."""
+        return self._rows(
+            """
+            SELECT mr.* FROM meter_readings mr
+            WHERE mr.flat_id = ?
+              AND EXISTS (
+                SELECT 1 FROM payment_status ps
+                WHERE ps.reading_id = mr.id AND ps.paid = 0 AND ps.amount > 0
+              )
+            ORDER BY mr.month DESC
+            """,
+            (flat_id,),
+        )

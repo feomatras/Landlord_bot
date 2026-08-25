@@ -83,22 +83,69 @@ def tenant_menu() -> InlineKeyboardMarkup:
 def report_keyboard(reading_id: int, statuses: dict[str, object], amounts: dict[str, float]) -> InlineKeyboardMarkup:
     """
     Создаёт клавиатуру для отчёта администратора.
-    В кнопках отображаются название услуги, сумма и статус оплаты.
+    Каждая кнопка имеет явную подпись услуги, сумму и статус оплаты.
     """
     services = ("water", "electricity", "gas", "tko", "uk", "caprepair")
     rows = []
     for service in services:
-        # Пропускаем услуги с нулевой суммой (чтобы не засорять интерфейс)
         if service not in amounts or amounts[service] == 0:
             continue
         paid = bool(statuses.get(service, {}).get("paid", 0)) if service in statuses else False
-        label = f"{service_name(service)}: {amounts[service]:.2f} руб. {'✅' if paid else '⬜️'}"
+        icon = "✅" if paid else "⬜️"
+        label = f"{icon} {service_name(service)}: {amounts[service]:.2f} руб."
         rows.append(
             [InlineKeyboardButton(label, callback_data=f"pay:{reading_id}:{service}")]
         )
-    # Если все суммы нулевые, показываем кнопку "Назад"
     if not rows:
         rows.append([InlineKeyboardButton("Назад", callback_data="menu")])
+    return InlineKeyboardMarkup(rows)
+
+
+def quarter_navigation_keyboard(
+    year: int,
+    quarter: int,
+    available_years: list[int],
+    view: str,
+    flat_id: int | None = None,
+) -> InlineKeyboardMarkup:
+    """
+    Клавиатура навигации по кварталам и годам.
+    view: 'journal' или 'history' — определяет callback-префикс.
+    flat_id передаётся в callback, чтобы сохранять контекст квартиры.
+    """
+    flat_prefix = f"{flat_id}:" if flat_id is not None else ""
+    rows = []
+    # Навигация по кварталам
+    prev_q = quarter - 1 if quarter > 1 else 4
+    prev_y = year if quarter > 1 else year - 1
+    next_q = quarter + 1 if quarter < 4 else 1
+    next_y = year if quarter < 4 else year + 1
+    rows.append([
+        InlineKeyboardButton("◀️ Предыдущий квартал", callback_data=f"qnav:{view}:{flat_prefix}{prev_y}:{prev_q}"),
+        InlineKeyboardButton("Следующий квартал ▶️", callback_data=f"qnav:{view}:{flat_prefix}{next_y}:{next_q}"),
+    ])
+    # Кнопки выбора года
+    year_buttons = []
+    for y in sorted(set(available_years + [year]), reverse=True):
+        label = f"{y}" + (" ←" if y == year else "")
+        year_buttons.append(InlineKeyboardButton(label, callback_data=f"qnav:{view}:{flat_prefix}{y}:{quarter}"))
+    # Разбиваем годы по рядам (максимум 4 в ряд)
+    for i in range(0, len(year_buttons), 4):
+        rows.append(year_buttons[i:i + 4])
+    rows.append([InlineKeyboardButton("Назад", callback_data="menu")])
+    return InlineKeyboardMarkup(rows)
+
+
+def history_entry_keyboard(reading_id: int, is_paid: bool, year: int, quarter: int, flat_id: int | None = None) -> InlineKeyboardMarkup:
+    """
+    Клавиатура для отдельной записи в истории (кнопка оплаты + навигация).
+    """
+    flat_prefix = f"{flat_id}:" if flat_id is not None else ""
+    label = "✅ Оплачено — снять" if is_paid else "⬜️ Отметить оплату"
+    rows = [
+        [InlineKeyboardButton(label, callback_data=f"paytoggle:{reading_id}:{view}history:{flat_prefix}{year}:{quarter}")],
+        [InlineKeyboardButton("Назад", callback_data=f"qnav:history:{flat_prefix}{year}:{quarter}")],
+    ]
     return InlineKeyboardMarkup(rows)
 
 

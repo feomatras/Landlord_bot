@@ -27,17 +27,23 @@ from .formatting import (
     MONTH_NAMES,
     actor_name,
     current_month,
+    current_quarter,
+    format_datetime,
     month_label,
     money,
     number,
     parse_month,
+    quarter_label,
+    quarter_of_month,
     service_name,
 )
 from .keyboards import (
     admin_menu,
     cancel_keyboard,
     confirm_remove_keyboard,
+    history_entry_keyboard,
     initial_keyboard,
+    quarter_navigation_keyboard,
     report_keyboard,
     tariff_keyboard,
     tenant_menu,
@@ -442,27 +448,51 @@ class CommunalBot:
         await update.effective_message.reply_text("\n".join(lines))
 
     async def cmd_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        admin = await self.require_admin(update)
-        if admin is None:
+        user = await self.require_user(update)
+        if user is None:
             return
-        flat_id = await self.selected_flat_or_prompt(update, admin["user_id"])
-        if flat_id is None:
+        if user["role"] == "admin":
+            flat_id = await self.selected_flat_or_prompt(update, user["user_id"])
+            if flat_id is None:
+                return
+            with_pay = True
+        else:
+            flat_id = int(user["flat_id"]) if user["flat_id"] else None
+            if flat_id is None:
+                await update.effective_message.reply_text("Вам ещё не назначена квартира.")
+                return
+            with_pay = False
+
+        now = datetime.now(MSK)
+        year = now.year
+        quarter = current_quarter(now.date())
+        text, keyboard = self.build_quarter_view(
+            flat_id, year, quarter, view="history", with_pay_buttons=with_pay
+        )
+        await update.effective_message.reply_text(text, reply_markup=keyboard)
+
+    async def cmd_journal(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Команда /journal — журнал изменений по квартире (поквартально)."""
+        user = await self.require_user(update)
+        if user is None:
             return
-        month = parse_month(context.args[0]) if context.args else None
-        if context.args and month is None:
-            await update.effective_message.reply_text("Месяц укажите в формате ММ.ГГГГ.")
-            return
-        readings = self.db.readings(flat_id, month)
-        if not readings:
-            await update.effective_message.reply_text("История расчётов пока пуста.")
-            return
-        lines = [f"История по квартире №{flat_id}:"]
-        for row in readings[:30]:
-            lines.append(
-                f"{month_label(row['month'])}: {money(float(row['total_with_uk']))} руб. "
-                f"(с капремонтом {money(float(row['total_for_admin']))} руб.)"
-            )
-        await update.effective_message.reply_text("\n".join(lines))
+        if user["role"] == "admin":
+            flat_id = await self.selected_flat_or_prompt(update, user["user_id"])
+            if flat_id is None:
+                return
+        else:
+            flat_id = int(user["flat_id"]) if user["flat_id"] else None
+            if flat_id is None:
+                await update.effective_message.reply_text("Вам ещё не назначена квартира.")
+                return
+
+        now = datetime.now(MSK)
+        year = now.year
+        quarter = current_quarter(now.date())
+        text, keyboard = self.build_quarter_view(
+            flat_id, year, quarter, view="journal", with_pay_buttons=False
+        )
+        await update.effective_message.reply_text(text, reply_markup=keyboard)
 
     async def cmd_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         admin = await self.require_admin(update)
@@ -835,22 +865,53 @@ class CommunalBot:
                 )
                 return
             if data == "tenant:history":
-                text = self.tenant_history_text(flat_id)
+                # Поквартальная история для арендатора
+                now = datetime.now(MSK)
+                year = now.year
+                quarter = current_quarter(now.date())
+                text, keyboard = self.build_quarter_view(
+                    flat_id, year, quarter, view="journal", with_pay_buttons=False
+                )
+                await query.edit_message_text(text, reply_markup=keyboard)
             else:
                 text = self.tenant_tariff_text(flat_id)
-            await query.edit_message_text(text, reply_markup=tenant_menu())
+                await query.edit_message_text(text, reply_markup=tenant_menu())
             return
+
+        # Журнал изменений — для арендатора по своей квартире, для админа по выбранной
         if data == "audit":
-            flat_id = int(user["flat_id"]) if user["flat_id"] else None
-            if flat_id is None:
-                await query.edit_message_text("Квартира ещё не назначена.")
-                return
+            if user["role"] == "admin":
+                flat_id = self.selected_flat_id(int(user["user_id"]))
+                if flat_id is None:
+                    await query.edit_message_text(
+                        "Сначала выберите квартиру через /select_flat",
+                        reply_markup=admin_menu(),
+                    )
+                    return
+            else:
+                flat_id = int(user["flat_id"]) if user["flat_id"] else None
+                if flat_id is None:
+                    await query.edit_message_text("Квартира ещё не назначена.")
+                    return
+            # Показываем журнал изменений (audit log) для квартиры
             entries = self.db.audit_entries(flat_id)
             text = "\n".join(
                 f"{row['actor_name']}: {row['details']}" for row in entries
             ) or "Изменений по квартире пока нет."
-            await query.edit_message_text(text, reply_markup=tenant_menu())
+            menu = admin_menu() if user["role"] == "admin" else tenant_menu()
+            await query.edit_message_text(text, reply_markup=menu)
             return
+
+        # Навигация по кварталам (общая для журнала и истории)
+        if data.startswith("qnav:"):
+            await self.handle_quarter_navigation(update, context, user, data)
+            return
+
+        # Переключение оплаты из истории
+        if data.startswith("paytoggle:"):
+            await self.handle_pay_toggle(update, context, user, data)
+            return
+
         if user["role"] != "admin":
             await query.edit_message_text("Эта кнопка доступна только администратору.")
             return
@@ -901,20 +962,33 @@ class CommunalBot:
                 )
             await query.edit_message_text(prompt, reply_markup=cancel_keyboard())
             return
+        # История — поквартальный отчёт для администратора с кнопками оплаты
         if data == "history":
-            rows = self.db.readings(flat_id)
-            text = "\n".join(
-                f"{month_label(row['month'])}: {money(float(row['total_with_uk']))} руб."
-                for row in rows[:20]
-            ) or "История расчётов пока пуста."
-            await query.edit_message_text(text, reply_markup=admin_menu())
+            now = datetime.now(MSK)
+            year = now.year
+            quarter = current_quarter(now.date())
+            text, keyboard = self.build_quarter_view(
+                flat_id, year, quarter, view="history", with_pay_buttons=True
+            )
+            await query.edit_message_text(text, reply_markup=keyboard)
             return
-        if data == "audit":
-            entries = self.db.audit_entries(flat_id)
-            text = "\n".join(
-                f"{row['actor_name']}: {row['details']}" for row in entries
-            ) or "Журнал изменений пока пуст."
-            await query.edit_message_text(text, reply_markup=admin_menu())
+        # Неоплаченные счета
+        if data == "unpaid":
+            unpaid = self.db.all_unpaid_readings(flat_id)
+            if not unpaid:
+                await query.edit_message_text(
+                    "Все счета оплачены.", reply_markup=admin_menu()
+                )
+                return
+            lines = ["Неоплаченные счета:\n"]
+            for row in unpaid:
+                paid_status = "✅" if self.db.is_reading_paid(int(row["id"])) else "⬜️"
+                lines.append(
+                    f"{month_label(row['month'])}: {money(float(row['total_with_uk']))} руб. {paid_status}"
+                )
+            await query.edit_message_text(
+                "\n".join(lines), reply_markup=admin_menu()
+            )
             return
         if data.startswith("initial:"):
             meter = data.split(":", 1)[1]
@@ -985,6 +1059,121 @@ class CommunalBot:
     def set_pending(self, context: ContextTypes.DEFAULT_TYPE, kind: str, **values: Any) -> None:
         context.user_data["pending"] = {"kind": kind, **values}
         context.user_data.pop("reading_state", None)
+
+    # --- Поквартальная навигация для журнала и истории ---
+
+    def build_quarter_view(
+        self,
+        flat_id: int,
+        year: int,
+        quarter: int,
+        view: str = "journal",
+        with_pay_buttons: bool = False,
+    ) -> tuple[str, InlineKeyboardMarkup]:
+        """
+        Строит текст и клавиатуру для поквартального просмотра.
+        view: 'journal' — журнал (без кнопок оплаты), 'history' — история с кнопками оплаты.
+        """
+        flat = self.db.flat(flat_id)
+        flat_name = flat["name"] if flat else f"№{flat_id}"
+        readings = self.db.readings_for_quarter(flat_id, year, quarter)
+        available_years = self.db.available_years(flat_id)
+
+        header = f"📋 {quarter_label(quarter, year)} — {flat_name}\n\n"
+
+        if not readings:
+            text = header + "За этот период нет записей."
+        else:
+            lines = [header]
+            for row in readings:
+                submitter_name = (
+                    row["first_name"] or row["username"] or str(row["submitted_by"])
+                ).strip()
+                if not submitter_name:
+                    submitter_name = str(row["submitted_by"])
+                submitted_at = format_datetime(row["updated_at"])
+                total = float(row["total_with_uk"])
+                line = (
+                    f"📅 {month_label(row['month'])}\n"
+                    f"   Передал: {submitter_name}\n"
+                    f"   Дата: {submitted_at}\n"
+                    f"   Сумма: {money(total)} руб."
+                )
+                if with_pay_buttons:
+                    is_paid = self.db.is_reading_paid(int(row["id"]))
+                    status = "✅ Оплачено" if is_paid else "⬜️ Не оплачено"
+                    line += f"\n   Статус: {status}"
+                lines.append(line)
+            text = "\n\n".join(lines)
+
+        keyboard = quarter_navigation_keyboard(
+            year=year,
+            quarter=quarter,
+            available_years=available_years,
+            view=view,
+            flat_id=flat_id,
+        )
+        return text, keyboard
+
+    async def handle_quarter_navigation(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, user, data: str
+    ) -> None:
+        """Обрабатывает навигацию по кварталам: qnav:<view>:<flat_id>:<year>:<quarter>"""
+        query = update.callback_query
+        parts = data.split(":")
+        # qnav:view:flat_id:year:quarter  или  qnav:view:year:quarter
+        view = parts[1]
+        if len(parts) == 5:
+            flat_id = int(parts[2])
+            year = int(parts[3])
+            quarter = int(parts[4])
+        elif len(parts) == 4:
+            year = int(parts[2])
+            quarter = int(parts[3])
+            if user["role"] == "admin":
+                flat_id = self.selected_flat_id(int(user["user_id"])) or 0
+            else:
+                flat_id = int(user["flat_id"]) if user["flat_id"] else 0
+        else:
+            return
+
+        if flat_id == 0:
+            await query.edit_message_text("Квартира не выбрана.")
+            return
+
+        with_pay = view == "history" and user["role"] == "admin"
+        text, keyboard = self.build_quarter_view(
+            flat_id, year, quarter, view=view, with_pay_buttons=with_pay
+        )
+        await query.edit_message_text(text, reply_markup=keyboard)
+
+    async def handle_pay_toggle(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, user, data: str
+    ) -> None:
+        """Переключает оплату для записи из истории: paytoggle:<reading_id>:<view>:<flat_id>:<year>:<quarter>"""
+        query = update.callback_query
+        parts = data.split(":")
+        # paytoggle:reading_id:view:flat_id:year:quarter
+        if len(parts) < 6:
+            return
+        reading_id = int(parts[1])
+        view = parts[2]
+        flat_id = int(parts[3]) if parts[3] else 0
+        year = int(parts[4])
+        quarter = int(parts[5])
+
+        new_paid = self.db.toggle_reading_paid(reading_id)
+        await query.answer(
+            f"{'Оплачено' if new_paid else 'Оплата снята'}"
+        )
+
+        if flat_id == 0:
+            return
+
+        text, keyboard = self.build_quarter_view(
+            flat_id, year, quarter, view=view, with_pay_buttons=True
+        )
+        await query.edit_message_text(text, reply_markup=keyboard)
 
     async def send_invite(
         self,
