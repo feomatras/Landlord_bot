@@ -9,7 +9,7 @@ from datetime import datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from telegram import InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -41,7 +41,7 @@ from .keyboards import (
     admin_menu,
     cancel_keyboard,
     confirm_remove_keyboard,
-    history_entry_keyboard,
+    history_detail_keyboard,
     initial_keyboard,
     quarter_navigation_keyboard,
     report_keyboard,
@@ -462,6 +462,44 @@ class CommunalBot:
                 await update.effective_message.reply_text("Вам ещё не назначена квартира.")
                 return
             with_pay = False
+
+        if context.args:
+            month = parse_month(context.args[0])
+            if month is None:
+                await update.effective_message.reply_text(
+                    "Формат: /history ММ.ГГГГ, например /history 08.2026"
+                )
+                return
+            reading = self.db.reading(flat_id, month)
+            if reading is None:
+                await update.effective_message.reply_text(
+                    f"За {month_label(month)} показаний ещё нет."
+                )
+                return
+            if with_pay:
+                statuses = self.db.payment_statuses(int(reading["id"]))
+                amounts = {
+                    'water': float(reading['water_amount']),
+                    'electricity': float(reading['electricity_amount']),
+                    'gas': float(reading['gas_amount']),
+                    'tko': float(reading['tko_amount']),
+                    'uk': float(reading['uk_amount']),
+                    'caprepair': float(reading['caprepair_amount']),
+                }
+                year = int(month.split(".")[1])
+                quarter = quarter_of_month(month)
+                keyboard = history_detail_keyboard(
+                    int(reading["id"]), statuses, amounts, year, quarter, flat_id
+                )
+                await update.effective_message.reply_text(
+                    self.report_text(reading, flat_id, True),
+                    reply_markup=keyboard,
+                )
+            else:
+                await update.effective_message.reply_text(
+                    self.report_text(reading, flat_id, False)
+                )
+            return
 
         now = datetime.now(MSK)
         year = now.year
@@ -912,6 +950,42 @@ class CommunalBot:
             await self.handle_pay_toggle(update, context, user, data)
             return
 
+        if data.startswith("histdetail:"):
+            reading_id = int(data.split(":")[1])
+            reading = self.db._row(
+                "SELECT * FROM meter_readings WHERE id = ?", (reading_id,)
+            )
+            if reading is None:
+                await query.edit_message_text("Запись не найдена.")
+                return
+            detail_flat_id = int(reading["flat_id"])
+            if user["role"] != "admin" and int(user["flat_id"] or 0) != detail_flat_id:
+                await query.edit_message_text("Доступ закрыт.")
+                return
+            is_admin = user["role"] == "admin"
+            if is_admin:
+                statuses = self.db.payment_statuses(reading_id)
+                amounts = {
+                    'water': float(reading['water_amount']),
+                    'electricity': float(reading['electricity_amount']),
+                    'gas': float(reading['gas_amount']),
+                    'tko': float(reading['tko_amount']),
+                    'uk': float(reading['uk_amount']),
+                    'caprepair': float(reading['caprepair_amount']),
+                }
+                year = int(reading["month"].split(".")[1])
+                quarter = quarter_of_month(reading["month"])
+                detail_keyboard = history_detail_keyboard(
+                    reading_id, statuses, amounts, year, quarter, detail_flat_id
+                )
+            else:
+                detail_keyboard = tenant_menu()
+            await query.edit_message_text(
+                self.report_text(reading, detail_flat_id, is_admin),
+                reply_markup=detail_keyboard,
+            )
+            return
+
         if user["role"] != "admin":
             await query.edit_message_text("Эта кнопка доступна только администратору.")
             return
@@ -1038,6 +1112,70 @@ class CommunalBot:
                     f"{service_name(service)}: {'оплачено' if paid else 'не оплачено'}"
                 )
             return
+        if data.startswith("payhist:"):
+            parts = data.split(":")
+            reading_id = int(parts[1])
+            service = parts[2]
+            paid = self.db.toggle_payment(reading_id, service)
+            reading = self.db._row(
+                "SELECT * FROM meter_readings WHERE id = ?", (reading_id,)
+            )
+            if reading is None:
+                await query.edit_message_text("Запись не найдена.")
+                return
+            pay_flat_id = int(reading["flat_id"])
+            statuses = self.db.payment_statuses(reading_id)
+            amounts = {
+                'water': float(reading['water_amount']),
+                'electricity': float(reading['electricity_amount']),
+                'gas': float(reading['gas_amount']),
+                'tko': float(reading['tko_amount']),
+                'uk': float(reading['uk_amount']),
+                'caprepair': float(reading['caprepair_amount']),
+            }
+            year = int(reading["month"].split(".")[1])
+            quarter = quarter_of_month(reading["month"])
+            await query.edit_message_text(
+                self.report_text(reading, pay_flat_id, True),
+                reply_markup=history_detail_keyboard(
+                    reading_id, statuses, amounts, year, quarter, pay_flat_id
+                ),
+            )
+            await query.answer(
+                f"{service_name(service)}: {'оплачено' if paid else 'не оплачено'}"
+            )
+            return
+        if data.startswith("payhistall:"):
+            reading_id = int(data.split(":")[1])
+            new_paid = self.db.toggle_reading_paid(reading_id)
+            reading = self.db._row(
+                "SELECT * FROM meter_readings WHERE id = ?", (reading_id,)
+            )
+            if reading is None:
+                await query.edit_message_text("Запись не найдена.")
+                return
+            all_flat_id = int(reading["flat_id"])
+            statuses = self.db.payment_statuses(reading_id)
+            amounts = {
+                'water': float(reading['water_amount']),
+                'electricity': float(reading['electricity_amount']),
+                'gas': float(reading['gas_amount']),
+                'tko': float(reading['tko_amount']),
+                'uk': float(reading['uk_amount']),
+                'caprepair': float(reading['caprepair_amount']),
+            }
+            year = int(reading["month"].split(".")[1])
+            quarter = quarter_of_month(reading["month"])
+            await query.edit_message_text(
+                self.report_text(reading, all_flat_id, True),
+                reply_markup=history_detail_keyboard(
+                    reading_id, statuses, amounts, year, quarter, all_flat_id
+                ),
+            )
+            await query.answer(
+                "Все услуги: оплачено" if new_paid else "Все оплаты сняты"
+            )
+            return
         if data.startswith("select:"):
             selected = int(data.split(":")[1])
             self.db.select_flat(user["user_id"], selected)
@@ -1106,12 +1244,28 @@ class CommunalBot:
                 lines.append(line)
             text = "\n\n".join(lines)
 
+        extra_rows: list[list[InlineKeyboardButton]] | None = None
+        if view == "history" and readings:
+            extra_rows = []
+            for row in readings:
+                label = f"📅 {month_label(row['month'])}"
+                if with_pay_buttons:
+                    is_paid = self.db.is_reading_paid(int(row["id"]))
+                    status_icon = "✅" if is_paid else "⬜️"
+                    label += f" — {money(float(row['total_with_uk']))} руб. {status_icon}"
+                else:
+                    label += f" — {money(float(row['total_with_uk']))} руб."
+                extra_rows.append([
+                    InlineKeyboardButton(label, callback_data=f"histdetail:{row['id']}")
+                ])
+
         keyboard = quarter_navigation_keyboard(
             year=year,
             quarter=quarter,
             available_years=available_years,
             view=view,
             flat_id=flat_id,
+            extra_rows=extra_rows,
         )
         return text, keyboard
 

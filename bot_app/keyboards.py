@@ -30,7 +30,7 @@ def admin_menu() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("История", callback_data="history"),
                 InlineKeyboardButton("Журнал изменений", callback_data="audit"),
             ],
-            [InlineKeyboardButton("Неоплаченные счета", callback_data="unpaid")],   # <-- новая кнопка
+            [InlineKeyboardButton("Неоплаченные счета", callback_data="unpaid")],
             [InlineKeyboardButton("Инструкция", callback_data="help")],
         ]
     )
@@ -107,11 +107,14 @@ def quarter_navigation_keyboard(
     available_years: list[int],
     view: str,
     flat_id: int | None = None,
+    extra_rows: list[list[InlineKeyboardButton]] | None = None,
 ) -> InlineKeyboardMarkup:
     """
     Клавиатура навигации по кварталам и годам.
     view: 'journal' или 'history' — определяет callback-префикс.
     flat_id передаётся в callback, чтобы сохранять контекст квартиры.
+    extra_rows: дополнительные ряды кнопок (например, кнопки оплаты),
+                вставляются перед кнопкой «Назад».
     """
     flat_prefix = f"{flat_id}:" if flat_id is not None else ""
     rows = []
@@ -132,20 +135,50 @@ def quarter_navigation_keyboard(
     # Разбиваем годы по рядам (максимум 4 в ряд)
     for i in range(0, len(year_buttons), 4):
         rows.append(year_buttons[i:i + 4])
+    if extra_rows:
+        rows.extend(extra_rows)
     rows.append([InlineKeyboardButton("Назад", callback_data="menu")])
     return InlineKeyboardMarkup(rows)
 
 
-def history_entry_keyboard(reading_id: int, is_paid: bool, year: int, quarter: int, flat_id: int | None = None) -> InlineKeyboardMarkup:
+def history_detail_keyboard(
+    reading_id: int,
+    statuses: dict[str, object],
+    amounts: dict[str, float],
+    year: int,
+    quarter: int,
+    flat_id: int | None = None,
+) -> InlineKeyboardMarkup:
     """
-    Клавиатура для отдельной записи в истории (кнопка оплаты + навигация).
+    Клавиатура для детального отчёта из истории.
+    Показывает кнопки оплаты по каждой услуге, кнопку «Оплатить всё»
+    и навигацию назад к кварталу.
     """
     flat_prefix = f"{flat_id}:" if flat_id is not None else ""
-    label = "✅ Оплачено — снять" if is_paid else "⬜️ Отметить оплату"
-    rows = [
-        [InlineKeyboardButton(label, callback_data=f"paytoggle:{reading_id}:{view}history:{flat_prefix}{year}:{quarter}")],
-        [InlineKeyboardButton("Назад", callback_data=f"qnav:history:{flat_prefix}{year}:{quarter}")],
-    ]
+    services = ("water", "electricity", "gas", "tko", "uk", "caprepair")
+    rows = []
+    for service in services:
+        if service not in amounts or amounts[service] == 0:
+            continue
+        paid = bool(statuses.get(service, {}).get("paid", 0)) if service in statuses else False
+        icon = "✅" if paid else "⬜️"
+        label = f"{icon} {service_name(service)}: {amounts[service]:.2f} руб."
+        rows.append(
+            [InlineKeyboardButton(label, callback_data=f"payhist:{reading_id}:{service}:{flat_prefix}{year}:{quarter}")]
+        )
+    all_paid = all(
+        bool(statuses.get(s, {}).get("paid", 0))
+        for s in services
+        if s in amounts and amounts[s] > 0
+    ) if statuses else False
+    if rows:
+        toggle_label = "❌ Снять все оплаты" if all_paid else "✅ Отметить все оплаченными"
+        rows.append([
+            InlineKeyboardButton(toggle_label, callback_data=f"payhistall:{reading_id}:{flat_prefix}{year}:{quarter}")
+        ])
+    rows.append([
+        InlineKeyboardButton("◀️ Назад к кварталу", callback_data=f"qnav:history:{flat_prefix}{year}:{quarter}")
+    ])
     return InlineKeyboardMarkup(rows)
 
 
